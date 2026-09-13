@@ -1,0 +1,23 @@
+[package]
+name = "hypr-shortcut-launcher"
+version = "0.1.0"
+edition = "2024"
+description = "A searchable Hyprland shortcut and running-app overlay"
+license = "MIT"
+repository = "https://github.com/Zsweezzy/hypr-shortcut-launcher"
+
+[lib]
+name = "hypr_shortcut_launcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hypr-shortcut-launcher"
+path = "src/main.rs"
+
+[dependencies]
+gtk4 = "0.11.5"
+gtk4-layer-shell = "0.8.1"
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
