@@ -1,0 +1,36 @@
+# Third-party notices
+
+`hypr-shortcut-launcher` itself is MIT licensed; see [LICENSE](LICENSE). This
+file records the one thing that licence does not settle on its own. It is kept
+separate from `LICENSE` on purpose: GitHub detects a project's licence by
+matching the licence text in `LICENSE`, and a file that continues past the end
+of the MIT text is reported as "Other" instead of MIT.
+
+## GTK 4 — LGPL-2.1
+
+The binary links GTK 4 dynamically against whatever GTK 4 the user's system
+provides. It does not vendor, statically link, or patch GTK 4.
+
+The LGPL requires that anyone receiving a copy of the binary may replace the
+GTK 4 shared libraries it uses with modified versions, and that the
+corresponding GTK 4 sources be available to them. Dynamic linking against the
+system library satisfies the first of those provided the second holds, which on
+most distributions it does — the GTK 4 sources ship in the development package:
+
+| Distribution | GTK 4 source package |
+| --- | --- |
+| Arch | `gtk4` (the `-dbg`/`gtk4-devel` variants where split) |
+| Fedora | `gtk4-devel` |
+| Debian, Ubuntu | `libgtk-4-dev` |
+| openSUSE | `gtk4-devel` |
+
+`gtk4-layer-shell`, the same LGPL-2.1 licensing, is linked the same way.
+
+Building from this repository produces the same binary, with both libraries
+again supplied by the build host's package manager, so a distro package that
+builds from source and depends on its own `gtk4` and `gtk4-layer-shell` is
+carrying a binary that is straightforwardly LGPL-compliant.
+
+What would *not* be compliant, and is not done here: statically linking GTK 4
+or gtk4-layer-shell into the binary, patching either library, or shipping a
+build with the relinking ability removed.
