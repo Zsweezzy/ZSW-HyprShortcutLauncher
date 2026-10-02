@@ -19,9 +19,10 @@ use gtk4::{
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
 use hypr_shortcut_launcher::{
-    AppGroup,
+    AppGroup, InstalledCommand, InstalledRow,
     apps::{append_running_windowless_apps, filter_apps, group_windows},
     hyprland::{self, HyprlandService, ProcessCommandExecutor},
+    installed,
     model::{Shortcut, filter_shortcuts},
 };
 
@@ -33,13 +34,45 @@ const MAIN_MONITOR_ENV: &str = "HYPR_LAUNCHER_MAIN_MONITOR";
 enum ActiveTab {
     Shortcuts,
     Apps,
+    Installed,
+}
+
+impl ActiveTab {
+    /// Number of tabs, and so the width of the Tab cycle.
+    const COUNT: u32 = 3;
+
+    fn index(self) -> u32 {
+        match self {
+            ActiveTab::Shortcuts => 0,
+            ActiveTab::Apps => 1,
+            ActiveTab::Installed => 2,
+        }
+    }
+
+    fn from_index(index: u32) -> Self {
+        match index {
+            0 => ActiveTab::Shortcuts,
+            1 => ActiveTab::Apps,
+            _ => ActiveTab::Installed,
+        }
+    }
+
+    fn next(self, forward: bool) -> Self {
+        let step = if forward { 1 } else { Self::COUNT - 1 };
+        Self::from_index((self.index() + step) % Self::COUNT)
+    }
 }
 
 struct State {
     shortcuts: Vec<Shortcut>,
     apps: Vec<AppGroup>,
+    installed: Vec<InstalledCommand>,
     filtered_shortcuts: Vec<Shortcut>,
     filtered_apps: Vec<AppGroup>,
+    filtered_installed: Vec<InstalledCommand>,
+    /// Section headings interleaved with `filtered_installed`, in the order the
+    /// rows are rendered. A row index indexes this, not `filtered_installed`.
+    installed_rows: Vec<InstalledRow>,
     active_tab: ActiveTab,
     error: Option<String>,
     has_refresh_result: bool,
@@ -48,12 +81,15 @@ struct State {
 struct RefreshResult {
     shortcuts: Result<Vec<Shortcut>, String>,
     apps: Result<Vec<AppGroup>, String>,
+    /// A `PATH` scan that swallows unreadable directories, so it cannot fail.
+    installed: Vec<InstalledCommand>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct RefreshChanges {
     shortcuts: bool,
     apps: bool,
+    installed: bool,
     status: bool,
 }
 
@@ -64,12 +100,16 @@ struct LauncherUi {
     notebook: gtk::Notebook,
     shortcut_list: gtk::ListBox,
     app_list: gtk::ListBox,
+    installed_list: gtk::ListBox,
     shortcut_scroll: gtk::ScrolledWindow,
     app_scroll: gtk::ScrolledWindow,
+    installed_scroll: gtk::ScrolledWindow,
     shortcut_scroll_generation: Rc<Cell<u64>>,
     app_scroll_generation: Rc<Cell<u64>>,
+    installed_scroll_generation: Rc<Cell<u64>>,
     shortcut_tab_label: gtk::Label,
     app_tab_label: gtk::Label,
+    installed_tab_label: gtk::Label,
     status: gtk::Label,
     detail: gtk::Label,
     service: Arc<HyprlandService<ProcessCommandExecutor>>,
@@ -110,15 +150,18 @@ pub fn create_window(
     let state = Rc::new(RefCell::new(State {
         shortcuts: Vec::new(),
         apps: Vec::new(),
+        installed: Vec::new(),
         filtered_shortcuts: Vec::new(),
         filtered_apps: Vec::new(),
+        filtered_installed: Vec::new(),
+        installed_rows: Vec::new(),
         active_tab: ActiveTab::Shortcuts,
         error: None,
         has_refresh_result: false,
     }));
 
     let search = gtk::SearchEntry::new();
-    search.set_placeholder_text(Some("Search shortcuts, actions, or apps…"));
+    search.set_placeholder_text(Some("Search shortcuts, running apps, or commands…"));
     search.set_hexpand(true);
     search.add_css_class("search-entry");
 
@@ -141,13 +184,25 @@ pub fn create_window(
     app_scroll.set_vexpand(true);
     app_scroll.set_child(Some(&app_list));
 
+    let installed_list = gtk::ListBox::new();
+    installed_list.set_selection_mode(gtk::SelectionMode::Single);
+    installed_list.set_activate_on_single_click(false);
+    installed_list.add_css_class("result-list");
+
+    let installed_scroll = gtk::ScrolledWindow::new();
+    installed_scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    installed_scroll.set_vexpand(true);
+    installed_scroll.set_child(Some(&installed_list));
+
     let shortcut_tab_label = gtk::Label::new(Some("Hyprland shortcuts"));
     let app_tab_label = gtk::Label::new(Some("Running apps"));
+    let installed_tab_label = gtk::Label::new(Some("Installed apps"));
     let notebook = gtk::Notebook::new();
     notebook.set_show_border(false);
     notebook.set_vexpand(true);
     notebook.append_page(&shortcut_scroll, Some(&shortcut_tab_label));
     notebook.append_page(&app_scroll, Some(&app_tab_label));
+    notebook.append_page(&installed_scroll, Some(&installed_tab_label));
 
     let status = gtk::Label::new(Some("Loading Hyprland data…"));
     status.add_css_class("status");
@@ -166,7 +221,7 @@ pub fn create_window(
 
     let footer = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let hints = gtk::Label::new(Some(
-        "Tab / Shift+Tab switch  •  ↑↓ select  •  Enter focus app  •  Esc close",
+        "Tab / Shift+Tab switch  •  ↑↓ select  •  Enter act  •  Esc close",
     ));
     hints.add_css_class("hints");
     hints.set_xalign(0.0);
@@ -211,12 +266,16 @@ pub fn create_window(
         notebook,
         shortcut_list,
         app_list,
+        installed_list,
         shortcut_scroll: shortcut_scroll.clone(),
         app_scroll: app_scroll.clone(),
+        installed_scroll: installed_scroll.clone(),
         shortcut_scroll_generation: Rc::new(Cell::new(0)),
         app_scroll_generation: Rc::new(Cell::new(0)),
+        installed_scroll_generation: Rc::new(Cell::new(0)),
         shortcut_tab_label,
         app_tab_label,
+        installed_tab_label,
         status,
         detail,
         service: Arc::new(HyprlandService::default()),
@@ -237,11 +296,7 @@ pub fn create_window(
         ui.notebook.connect_switch_page(move |_, _, page| {
             {
                 let mut state = callback_ui.state.borrow_mut();
-                state.active_tab = if page == 0 {
-                    ActiveTab::Shortcuts
-                } else {
-                    ActiveTab::Apps
-                };
+                state.active_tab = ActiveTab::from_index(page);
             }
             callback_ui.update_status();
         });
@@ -258,6 +313,13 @@ pub fn create_window(
         let callback_ui = ui.clone();
         ui.app_list.connect_row_activated(move |_, _| {
             callback_ui.activate_selected_app();
+        });
+    }
+
+    {
+        let callback_ui = ui.clone();
+        ui.installed_list.connect_row_activated(move |_, _| {
+            callback_ui.activate_selected_command();
         });
     }
 
@@ -562,6 +624,12 @@ fn install_css() {
     .app-detail {
         color: #a9b1d6;
     }
+    .section-heading {
+        color: #7aa2f7;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+    }
     .status, .detail, .hints {
         color: #565f89;
         font-size: 12px;
@@ -621,6 +689,7 @@ impl LauncherUi {
                         apps
                     })
                     .map_err(|error| error.to_string()),
+                installed: installed::scan(),
             };
             {
                 let mut slot = result_slot
@@ -634,18 +703,25 @@ impl LauncherUi {
 
     fn apply_refresh(&self, result: RefreshResult) {
         let changes = merge_refresh_result(&mut self.state.borrow_mut(), result);
-        if changes.shortcuts || changes.apps {
-            self.rebuild_lists_with_changes(changes.shortcuts, changes.apps);
+        if changes.shortcuts || changes.apps || changes.installed {
+            self.rebuild_lists_with_changes(changes);
         } else if changes.status {
             self.update_status();
         }
     }
 
     fn rebuild_lists(&self) {
-        self.rebuild_lists_with_changes(true, true);
+        self.rebuild_lists_with_changes(RefreshChanges {
+            shortcuts: true,
+            apps: true,
+            installed: true,
+            status: true,
+        });
     }
 
-    fn rebuild_lists_with_changes(&self, shortcuts_changed: bool, apps_changed: bool) {
+    fn rebuild_lists_with_changes(&self, changes: RefreshChanges) {
+        let (shortcuts_changed, apps_changed, installed_changed) =
+            (changes.shortcuts, changes.apps, changes.installed);
         let selected_shortcut_index = if shortcuts_changed {
             selected_row_index(&self.shortcut_list)
         } else {
@@ -671,7 +747,7 @@ impl LauncherUi {
         };
 
         let query = self.search.text().to_string();
-        let (shortcuts, apps, active_tab) = {
+        let (shortcuts, apps, installed, active_tab) = {
             let state = self.state.borrow();
             let shortcuts = if shortcuts_changed {
                 filter_shortcuts(&state.shortcuts, &query)
@@ -683,7 +759,12 @@ impl LauncherUi {
             } else {
                 state.filtered_apps.clone()
             };
-            (shortcuts, apps, state.active_tab)
+            let installed = if installed_changed {
+                installed::filter(&state.installed, &query)
+            } else {
+                state.filtered_installed.clone()
+            };
+            (shortcuts, apps, installed, state.active_tab)
         };
         let shortcut_index = if shortcuts_changed {
             resolve_list_index(
@@ -703,6 +784,32 @@ impl LauncherUi {
         } else {
             None
         };
+        // Row indices count headings, so resolve the selection against the
+        // rendered rows and hand back a row index.
+        let installed_rows = installed::rows(&installed);
+        let installed_index = if installed_changed {
+            let previous = selected_row_index(&self.installed_list);
+            let previous_name = previous.and_then(|index| {
+                self.state
+                    .borrow()
+                    .installed_rows
+                    .get(index)
+                    .and_then(InstalledRow::command)
+                    .map(|command| command.name.clone())
+            });
+            resolve_list_index(
+                preserved_installed_index(&installed_rows, previous_name.as_deref()),
+                previous,
+                installed_rows.len(),
+            )
+        } else {
+            None
+        };
+        // The installed list opens with a section heading, which cannot be run.
+        // Land the selection on the first command instead so Enter works right
+        // after typing a query, the same as in the other tabs.
+        let installed_index =
+            installed_index.and_then(|index| command_row_at_or_after(&installed_rows, index));
 
         {
             let mut state = self.state.borrow_mut();
@@ -711,6 +818,10 @@ impl LauncherUi {
             }
             if apps_changed {
                 state.filtered_apps = apps;
+            }
+            if installed_changed {
+                state.filtered_installed = installed;
+                state.installed_rows = installed_rows;
             }
         }
 
@@ -742,43 +853,54 @@ impl LauncherUi {
             }
         }
 
-        if let Some(index) = shortcut_index
-            && let Ok(index) = i32::try_from(index)
-            && let Some(row) = self.shortcut_list.row_at_index(index)
-        {
-            self.shortcut_list.select_row(Some(&row));
-            scroll_row_into_view(
-                &self.shortcut_scroll,
-                &self.shortcut_list,
-                &row,
-                &self.shortcut_scroll_generation,
-            );
-        }
-        if let Some(index) = app_index
-            && let Ok(index) = i32::try_from(index)
-            && let Some(row) = self.app_list.row_at_index(index)
-        {
-            self.app_list.select_row(Some(&row));
-            scroll_row_into_view(
-                &self.app_scroll,
-                &self.app_list,
-                &row,
-                &self.app_scroll_generation,
-            );
+        if installed_changed {
+            self.installed_scroll_generation
+                .set(self.installed_scroll_generation.get().wrapping_add(1));
+            clear_list(&self.installed_list);
+            let state = self.state.borrow();
+            if state.installed_rows.is_empty() {
+                add_empty_row(&self.installed_list, "No matching installed commands");
+            } else {
+                for row in &state.installed_rows {
+                    self.installed_list.append(&installed_row(row));
+                }
+            }
         }
 
-        let (shortcut_count, app_count) = {
+        select_and_scroll(
+            &self.shortcut_list,
+            &self.shortcut_scroll,
+            &self.shortcut_scroll_generation,
+            shortcut_index,
+        );
+        select_and_scroll(
+            &self.app_list,
+            &self.app_scroll,
+            &self.app_scroll_generation,
+            app_index,
+        );
+        select_and_scroll(
+            &self.installed_list,
+            &self.installed_scroll,
+            &self.installed_scroll_generation,
+            installed_index,
+        );
+
+        let (shortcut_count, app_count, installed_count) = {
             let state = self.state.borrow();
-            (state.filtered_shortcuts.len(), state.filtered_apps.len())
+            (
+                state.filtered_shortcuts.len(),
+                state.filtered_apps.len(),
+                state.filtered_installed.len(),
+            )
         };
         self.shortcut_tab_label
             .set_text(&format!("Hyprland shortcuts ({shortcut_count})"));
         self.app_tab_label
             .set_text(&format!("Running apps ({app_count})"));
-        self.notebook.set_current_page(Some(match active_tab {
-            ActiveTab::Shortcuts => 0,
-            ActiveTab::Apps => 1,
-        }));
+        self.installed_tab_label
+            .set_text(&format!("Installed apps ({installed_count})"));
+        self.notebook.set_current_page(Some(active_tab.index()));
         self.update_status();
     }
 
@@ -788,9 +910,10 @@ impl LauncherUi {
             format!("Hyprland unavailable: {error}")
         } else {
             format!(
-                "{} shortcuts  •  {} running apps",
+                "{} shortcuts  •  {} running apps  •  {} installed",
                 state.filtered_shortcuts.len(),
-                state.filtered_apps.len()
+                state.filtered_apps.len(),
+                state.filtered_installed.len()
             )
         };
         self.status.set_text(&text);
@@ -830,6 +953,10 @@ impl LauncherUi {
             self.switch_to_tab(ActiveTab::Apps);
             return true;
         }
+        if alt && key == gdk::Key::_3 {
+            self.switch_to_tab(ActiveTab::Installed);
+            return true;
+        }
         if control && key == gdk::Key::r {
             self.start_refresh();
             return true;
@@ -843,10 +970,10 @@ impl LauncherUi {
             return true;
         }
         if key == gdk::Key::Return || key == gdk::Key::KP_Enter || key == gdk::Key::ISO_Enter {
-            if self.state.borrow().active_tab == ActiveTab::Apps {
-                self.activate_selected_app();
-            } else {
-                self.show_selected_shortcut();
+            match self.state.borrow().active_tab {
+                ActiveTab::Shortcuts => self.show_selected_shortcut(),
+                ActiveTab::Apps => self.activate_selected_app(),
+                ActiveTab::Installed => self.activate_selected_command(),
             }
             return true;
         }
@@ -854,19 +981,12 @@ impl LauncherUi {
     }
 
     fn switch_tab(&self, forward: bool) {
-        let current = self.state.borrow().active_tab;
-        let next = match (current, forward) {
-            (ActiveTab::Shortcuts, true) | (ActiveTab::Apps, false) => ActiveTab::Apps,
-            (ActiveTab::Shortcuts, false) | (ActiveTab::Apps, true) => ActiveTab::Shortcuts,
-        };
+        let next = self.state.borrow().active_tab.next(forward);
         self.switch_to_tab(next);
     }
 
     fn switch_to_tab(&self, tab: ActiveTab) {
-        self.notebook.set_current_page(Some(match tab {
-            ActiveTab::Shortcuts => 0,
-            ActiveTab::Apps => 1,
-        }));
+        self.notebook.set_current_page(Some(tab.index()));
         self.search.grab_focus();
     }
 
@@ -886,6 +1006,12 @@ impl LauncherUi {
                     self.app_scroll_generation.clone(),
                     state.filtered_apps.len(),
                 ),
+                ActiveTab::Installed => (
+                    self.installed_list.clone(),
+                    self.installed_scroll.clone(),
+                    self.installed_scroll_generation.clone(),
+                    state.installed_rows.len(),
+                ),
             }
         };
         if count == 0 {
@@ -896,11 +1022,20 @@ impl LauncherUi {
             .selected_row()
             .map(|row| row.index())
             .unwrap_or(if direction > 0 { -1 } else { count as i32 });
-        let next = (current + direction).rem_euclid(count as i32);
-        if let Some(row) = list.row_at_index(next) {
-            generation.set(generation.get().wrapping_add(1));
-            list.select_row(Some(&row));
-            scroll_row_into_view(&scroll, &list, &row, &generation);
+        // Section headings are rows like any other, so step past the ones that
+        // cannot be selected rather than letting the cursor rest on a label.
+        let mut next = (current + direction).rem_euclid(count as i32);
+        for _ in 0..count {
+            let Some(row) = list.row_at_index(next) else {
+                return;
+            };
+            if row.is_activatable() {
+                generation.set(generation.get().wrapping_add(1));
+                list.select_row(Some(&row));
+                scroll_row_into_view(&scroll, &list, &row, &generation);
+                return;
+            }
+            next = (next + direction).rem_euclid(count as i32);
         }
     }
 
@@ -949,10 +1084,58 @@ impl LauncherUi {
                 .set_text(&format!("Could not focus app: {error}")),
         }
     }
+
+    fn activate_selected_command(&self) {
+        let index = self
+            .installed_list
+            .selected_row()
+            .map(|row| row.index())
+            .unwrap_or(0) as usize;
+        let name = {
+            let state = self.state.borrow();
+            state
+                .installed_rows
+                .get(index)
+                .and_then(InstalledRow::command)
+                .map(|command| command.name.clone())
+        };
+        let Some(name) = name else {
+            return;
+        };
+
+        match installed::launch(&name) {
+            Ok(()) => self.hide(),
+            Err(error) => self.detail.set_text(&error),
+        }
+    }
+}
+
+/// Selects a row and brings it into view, if the list has that many rows.
+fn select_and_scroll(
+    list: &gtk::ListBox,
+    scroll: &gtk::ScrolledWindow,
+    generation: &Rc<Cell<u64>>,
+    index: Option<usize>,
+) {
+    let Some(index) = index else {
+        return;
+    };
+    let Ok(index) = i32::try_from(index) else {
+        return;
+    };
+    let Some(row) = list.row_at_index(index) else {
+        return;
+    };
+    list.select_row(Some(&row));
+    scroll_row_into_view(scroll, list, &row, generation);
 }
 
 fn merge_refresh_result(state: &mut State, result: RefreshResult) -> RefreshChanges {
-    let RefreshResult { shortcuts, apps } = result;
+    let RefreshResult {
+        shortcuts,
+        apps,
+        installed,
+    } = result;
     let first_result = !state.has_refresh_result;
     let shortcuts_changed = shortcuts
         .as_ref()
@@ -960,6 +1143,7 @@ fn merge_refresh_result(state: &mut State, result: RefreshResult) -> RefreshChan
     let apps_changed = apps
         .as_ref()
         .is_ok_and(|updated| state.apps.as_slice() != updated.as_slice());
+    let installed_changed = state.installed != installed;
     let previous_error = state.error.clone();
 
     let mut errors = Vec::new();
@@ -971,12 +1155,14 @@ fn merge_refresh_result(state: &mut State, result: RefreshResult) -> RefreshChan
         Ok(apps) => state.apps = apps,
         Err(error) => errors.push(format!("clients: {error}")),
     }
+    state.installed = installed;
     state.error = (!errors.is_empty()).then(|| errors.join("; "));
     state.has_refresh_result = true;
 
     RefreshChanges {
         shortcuts: first_result || shortcuts_changed,
         apps: first_result || apps_changed,
+        installed: first_result || installed_changed,
         status: previous_error.as_deref() != state.error.as_deref(),
     }
 }
@@ -1039,6 +1225,54 @@ fn shortcut_row(shortcut: &Shortcut) -> gtk::ListBoxRow {
     layout.append(&key);
     layout.append(&action);
     layout.append(&meta);
+    row.set_child(Some(&layout));
+    row
+}
+
+/// One line of the installed-apps tab: a section heading, or a runnable command.
+fn installed_row(item: &InstalledRow) -> gtk::ListBoxRow {
+    let InstalledRow::Command(command) = item else {
+        let row = gtk::ListBoxRow::new();
+        row.add_css_class("result-row");
+        row.set_activatable(false);
+        let heading = gtk::Label::new(Some(match item {
+            InstalledRow::Section(label) => label,
+            InstalledRow::Command(_) => unreachable!("handled above"),
+        }));
+        heading.add_css_class("section-heading");
+        heading.set_xalign(0.0);
+        heading.set_margin_top(14);
+        heading.set_margin_bottom(4);
+        heading.set_margin_start(12);
+        row.set_child(Some(&heading));
+        return row;
+    };
+
+    let row = gtk::ListBoxRow::new();
+    row.add_css_class("result-row");
+
+    let layout = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    layout.set_margin_top(8);
+    layout.set_margin_bottom(8);
+    layout.set_margin_start(12);
+    layout.set_margin_end(12);
+
+    let name = gtk::Label::new(Some(&command.name));
+    name.add_css_class("app-name");
+    name.set_xalign(0.0);
+
+    let description = gtk::Label::new(command.description.as_deref());
+    description.add_css_class("app-detail");
+    description.set_xalign(0.0);
+    description.set_hexpand(true);
+    description.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+    let hint = gtk::Label::new(Some("Enter to run"));
+    hint.add_css_class("metadata");
+
+    layout.append(&name);
+    layout.append(&description);
+    layout.append(&hint);
     row.set_child(Some(&layout));
     row
 }
@@ -1137,6 +1371,22 @@ fn preserved_app_index(apps: &[AppGroup], selected_class: Option<&str>) -> Optio
     selected_class.and_then(|selected| apps.iter().position(|app| app.class == selected))
 }
 
+/// Same idea as `preserved_app_index`, but over rows that carry headings, so a
+/// selected command stays selected when a heading appears above it.
+fn preserved_installed_index(rows: &[InstalledRow], selected_name: Option<&str>) -> Option<usize> {
+    selected_name.and_then(|selected| {
+        rows.iter().position(|row| {
+            row.command()
+                .is_some_and(|command| command.name == selected)
+        })
+    })
+}
+
+/// First runnable row at or after `start`, skipping section headings.
+fn command_row_at_or_after(rows: &[InstalledRow], start: usize) -> Option<usize> {
+    (start..rows.len()).find(|&index| rows[index].command().is_some())
+}
+
 fn tab_switch_direction(key: gdk::Key, modifiers: gdk::ModifierType) -> Option<bool> {
     if modifiers.contains(gdk::ModifierType::ALT_MASK)
         || modifiers.contains(gdk::ModifierType::SUPER_MASK)
@@ -1162,11 +1412,34 @@ fn is_super_focus_navigation_key(key: gdk::Key, modifiers: gdk::ModifierType) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        AppGroup, RefreshChanges, RefreshResult, Shortcut, State, is_super_focus_navigation_key,
-        merge_refresh_result, preserved_app_index, preserved_shortcut_index, resolve_list_index,
-        scroll_value_for_row, tab_switch_direction,
+        ActiveTab, AppGroup, InstalledCommand, RefreshChanges, RefreshResult, Shortcut, State,
+        command_row_at_or_after, installed, is_super_focus_navigation_key, merge_refresh_result,
+        preserved_app_index, preserved_installed_index, preserved_shortcut_index,
+        resolve_list_index, scroll_value_for_row, tab_switch_direction,
     };
     use gtk4::gdk;
+
+    fn installed_command(name: &str, tui: bool) -> InstalledCommand {
+        InstalledCommand {
+            name: name.to_owned(),
+            path: format!("/usr/bin/{name}"),
+            description: None,
+            tui,
+        }
+    }
+
+    #[test]
+    fn installed_selection_skips_the_section_heading() {
+        let rows = installed::rows(&[
+            installed_command("btop", true),
+            installed_command("ls", false),
+        ]);
+
+        // Row 0 is the "TUI apps" heading; the first runnable row is `btop`.
+        assert!(rows[0].command().is_none());
+        assert_eq!(command_row_at_or_after(&rows, 0), Some(1));
+        assert_eq!(command_row_at_or_after(&rows, 1), Some(1));
+    }
 
     #[test]
     fn preserves_shortcut_selection_by_value() {
@@ -1290,9 +1563,12 @@ mod tests {
         let mut state = State {
             shortcuts: vec![shortcut.clone()],
             apps: vec![app.clone()],
+            installed: vec![installed_command("ls", false)],
             filtered_shortcuts: vec![shortcut.clone()],
             filtered_apps: vec![app.clone()],
-            active_tab: super::ActiveTab::Shortcuts,
+            filtered_installed: vec![installed_command("ls", false)],
+            installed_rows: Vec::new(),
+            active_tab: ActiveTab::Shortcuts,
             error: None,
             has_refresh_result: true,
         };
@@ -1302,6 +1578,7 @@ mod tests {
             RefreshResult {
                 shortcuts: Ok(vec![shortcut]),
                 apps: Ok(vec![app]),
+                installed: vec![installed_command("ls", false)],
             },
         );
 
@@ -1326,9 +1603,12 @@ mod tests {
         let mut state = State {
             shortcuts: vec![shortcut.clone()],
             apps: vec![old_app.clone()],
+            installed: vec![installed_command("ls", false)],
             filtered_shortcuts: vec![shortcut.clone()],
             filtered_apps: vec![old_app.clone()],
-            active_tab: super::ActiveTab::Shortcuts,
+            filtered_installed: vec![installed_command("ls", false)],
+            installed_rows: Vec::new(),
+            active_tab: ActiveTab::Shortcuts,
             error: None,
             has_refresh_result: true,
         };
@@ -1338,6 +1618,7 @@ mod tests {
             RefreshResult {
                 shortcuts: Ok(vec![shortcut]),
                 apps: Ok(vec![new_app]),
+                installed: vec![installed_command("ls", false)],
             },
         );
 
@@ -1346,9 +1627,46 @@ mod tests {
             RefreshChanges {
                 shortcuts: false,
                 apps: true,
+                installed: false,
                 status: false,
             }
         );
+    }
+
+    #[test]
+    fn tab_cycle_wraps_through_all_three_tabs() {
+        let forward = |tab: ActiveTab| tab.next(true);
+        let backward = |tab: ActiveTab| tab.next(false);
+
+        assert_eq!(forward(ActiveTab::Shortcuts), ActiveTab::Apps);
+        assert_eq!(forward(ActiveTab::Apps), ActiveTab::Installed);
+        assert_eq!(forward(ActiveTab::Installed), ActiveTab::Shortcuts);
+        assert_eq!(backward(ActiveTab::Shortcuts), ActiveTab::Installed);
+        assert_eq!(backward(ActiveTab::Installed), ActiveTab::Apps);
+        assert_eq!(backward(ActiveTab::Apps), ActiveTab::Shortcuts);
+    }
+
+    #[test]
+    fn tab_index_matches_the_notebook_page() {
+        for tab in [ActiveTab::Shortcuts, ActiveTab::Apps, ActiveTab::Installed] {
+            assert_eq!(ActiveTab::from_index(tab.index()), tab);
+        }
+    }
+
+    #[test]
+    fn preserves_installed_selection_when_a_heading_is_inserted() {
+        let rows = hypr_shortcut_launcher::installed::rows(&[
+            installed_command("btop", true),
+            installed_command("ls", false),
+        ]);
+        let selected = rows
+            .iter()
+            .position(|row| row.command().is_some_and(|command| command.name == "ls"))
+            .unwrap();
+
+        assert_eq!(preserved_installed_index(&rows, Some("ls")), Some(selected));
+        assert!(rows[0].command().is_none());
+        assert_eq!(preserved_installed_index(&rows, Some("missing")), None);
     }
 
     #[test]
@@ -1363,9 +1681,12 @@ mod tests {
         let mut state = State {
             shortcuts: vec![original.clone()],
             apps: Vec::new(),
+            installed: Vec::new(),
             filtered_shortcuts: vec![original.clone()],
             filtered_apps: Vec::new(),
-            active_tab: super::ActiveTab::Shortcuts,
+            filtered_installed: Vec::new(),
+            installed_rows: Vec::new(),
+            active_tab: ActiveTab::Shortcuts,
             error: None,
             has_refresh_result: false,
         };
@@ -1375,6 +1696,7 @@ mod tests {
             RefreshResult {
                 shortcuts: Err("shortcuts unavailable".to_owned()),
                 apps: Ok(vec![replacement.clone()]),
+                installed: Vec::new(),
             },
         );
 
