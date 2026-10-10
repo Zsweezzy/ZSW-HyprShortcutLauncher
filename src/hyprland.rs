@@ -92,10 +92,6 @@ where
         validate_address(address)?;
         let lua_expression = format!("hl.dsp.focus({{ window = \"address:{address}\" }})");
 
-        // This Hyprland instance uses the Lua configuration bridge. Its
-        // `hyprctl dispatch` endpoint expects a Lua dispatcher expression,
-        // rather than the native `focuswindow address:...` argument form.
-        // Keep the native form as a fallback for ordinary Hyprland setups.
         match self.executor.run(&["dispatch", &lua_expression]) {
             Ok(_) => Ok(()),
             Err(lua_error) => {
@@ -119,12 +115,6 @@ impl Default for HyprlandService<ProcessCommandExecutor> {
     }
 }
 
-/// Returns whether a Hyprland event socket message represents a focus or
-/// workspace change that should dismiss an open launcher overlay.
-///
-/// Hyprland emits both the legacy event names and their `v2` counterparts,
-/// depending on the compositor version and the subscriptions used by the
-/// client.
 pub fn is_focus_change_event(event: &str) -> bool {
     let event_name = event.split_once(">>").map_or(event, |(name, _)| name);
     matches!(
@@ -138,22 +128,13 @@ pub fn is_focus_change_event(event: &str) -> bool {
     )
 }
 
-/// Starts a background listener for Hyprland's event socket.
-///
-/// The listener is intentionally best-effort: if Hyprland is restarting or
-/// the event socket is not available yet, it reconnects periodically. The
-/// supplied flag is consumed by the GTK main loop, which performs the actual
-/// window mutation on the UI thread.
 #[cfg(unix)]
 pub fn spawn_focus_change_listener(change_requested: Arc<AtomicBool>) {
     thread::spawn(move || {
         loop {
             if let Some(path) = focus_event_socket_path()
                 && listen_for_focus_changes(&path, &change_requested).is_err()
-            {
-                // Hyprland may be restarting or the socket may not have appeared
-                // yet. Keep trying without interrupting the launcher process.
-            }
+            {}
             thread::sleep(Duration::from_millis(250));
         }
     });

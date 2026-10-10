@@ -1,47 +1,39 @@
 # hypr-shortcut-launcher
 
-A searchable overlay for Hyprland, bound to `Super+K`. Three tabs: the keymap you
-have actually configured, the apps you have actually got running, and the
-commands you can run.
+A searchable `Super+K` overlay for Hyprland. Three tabs: the keymap you actually
+configured, the apps you actually have running, and the commands you can run.
 
-- **Hyprland shortcuts** — active bindings read from `hyprctl binds -j`, with
-  the `description` your config set on each bind.
-- **Running apps** — one row per application class. Selecting a row focuses its
-  most recently used window, which is usually the one you meant.
-- **Installed apps** — every executable on `PATH`, in two sections: `TUI apps`
-  and `Commands`. Each row shows the one-line summary from the manual (`whatis`
-  reads the index, so no command is executed), and Enter runs it in a terminal
-  window that stays open afterwards, so the output of a one-shot command like
-  `ls` is readable.
+## TL;DR
 
-The bindings tab is read-only. It shows what a key does; it does not run it.
+- **What** — one search box over your active Hyprland binds, running windows, and
+  every executable on `PATH`.
+- **Install** — no Rust needed. Grab the binary from
+  [Releases](../../releases), or run `install.sh`.
+- **Bind** — autostart a hidden instance, then bind `SUPER, K`.
+- **Use** — type to filter, `Enter` to focus the app or run the command, `Tab` to
+  switch tabs, `Esc` to close.
 
-Anything a desktop entry starts is treated as a graphical launcher and left out
-of the installed list, since a launcher already exists for it. That signal comes
-from the desktop entries under the XDG data directories: `Terminal=true` marks a
-terminal program, everything else is a window. Programs with no desktop entry at
-all, which is most TUI apps, are named in `TUI_APPS` in
-[`src/installed.rs`](src/installed.rs).
+## Install
 
-## Why
+### Without Rust
 
-`hyprctl binds` is a wall of dispatcher calls and no descriptions. Finding out
-what `Super+Shift+V` does means reading the config. Finding out which of six
-terminal windows is in front of the others means cycling. Both answers are one
-keystroke away here, and the shortcut names come from the same strings that
-already exist in the config.
+Download the binary for your architecture from the
+[latest release](../../releases) and put it on `PATH`. Or:
 
-## Build
+```sh
+curl -fsSL https://raw.githubusercontent.com/Zsweezzy/hypr-shortcut-launcher/main/install.sh | sh
+```
+
+The release binary needs GTK 4 and gtk4-layer-shell at runtime; both come from
+your distro's package manager (on Arch: `gtk4` and `gtk4-layer-shell`). The
+AppImage bundles them if you would rather not install anything.
+
+### With Rust
 
 Needs Rust (edition 2024), GTK 4 and gtk4-layer-shell development headers.
 
 ```sh
 cargo build --release
-```
-
-## Install
-
-```sh
 install -Dm755 target/release/hypr-shortcut-launcher ~/.local/bin/hypr-shortcut-launcher
 ```
 
@@ -50,8 +42,7 @@ install -Dm755 target/release/hypr-shortcut-launcher ~/.local/bin/hypr-shortcut-
 ## Bind it
 
 Autostart a hidden instance so the overlay opens instantly, then bind the key.
-See [`examples/hyprland.lua`](examples/hyprland.lua) for the annotated
-Lua-config version.
+See [`examples/hyprland.lua`](examples/hyprland.lua) for the annotated Lua version.
 
 ```lua
 hl.exec_cmd(os.getenv("HOME") .. "/.local/bin/hypr-shortcut-launcher --background")
@@ -59,16 +50,18 @@ hl.bind("SUPER, K", hl.dsp.exec_cmd(os.getenv("HOME") .. "/.local/bin/hypr-short
         { description = "Open shortcuts and apps launcher" })
 ```
 
-`--background` starts the instance without showing the overlay. It fills the
-data cache up front, so the keystroke does not have to wait on `hyprctl`. Each
-later invocation connects to the running instance over a per-user Unix socket
-under `$XDG_RUNTIME_DIR` and toggles it, so repeated `Super+K` presses flip one
-window rather than stacking overlays.
+In a plain `hyprland.conf`, the same two lines are
+`exec-once = hypr-shortcut-launcher --background` and
+`bind = SUPER, K, exec, hypr-shortcut-launcher`.
 
-The `description` on a bind is not decoration. The shortcuts tab reads it out of
-`hyprctl binds -j`, and Lua-backed binds are otherwise reported with an internal
-`__lua` action id that means nothing to a person. A bind with no description is
-shown as `Custom Hyprland action`.
+`--background` starts the instance hidden and warms the data cache, so the key
+press does not wait on `hyprctl`. Later invocations reach the running instance
+over a per-user Unix socket under `$XDG_RUNTIME_DIR`, so repeated `Super+K` presses
+toggle one window instead of stacking overlays.
+
+The `description` on a bind is not decoration: the shortcuts tab reads it back out
+of `hyprctl binds -j`, and Lua-backed binds are otherwise shown as an internal
+`__lua` id. A bind with no description shows as `Custom Hyprland action`.
 
 Run `hyprctl reload` after changing the config.
 
@@ -88,23 +81,30 @@ elsewhere dismisses it.
 
 ## Notes
 
-The overlay is a full-monitor transparent layer surface with a centered,
-rounded, lightly translucent panel. Outside the panel stays fully transparent,
-so it reads like Rofi and does not dim the desktop behind it.
+- Full-monitor transparent layer surface, centered rounded panel; outside the
+  panel stays fully transparent, like Rofi.
+- Hyprland data is fetched on a background thread and rendered in place, so the
+  window appears on the keystroke. The running-app list refreshes every two
+  seconds while open.
+- `Installed apps` is every executable on `PATH` minus graphical launchers, in
+  `TUI apps` and `Commands` sections. Rows show the one-line `whatis` summary
+  (`whatis` reads the manual index, so no command is executed); Enter runs it in a
+  terminal that stays open. The list of sources is in
+  [`src/installed.rs`](src/installed.rs).
+- Sits on the largest physical monitor. Set `HYPR_LAUNCHER_MAIN_MONITOR` to a
+  connector name (`DP-1`, `HDMI-A-1`, …) to choose.
+- Commands run in `$HYPR_LAUNCHER_TERMINAL`, default `kitty`.
+- App focus tries the Lua dispatcher first, then falls back to a native
+  `focuswindow` dispatch.
 
-Hyprland data is fetched on a background thread and rendered in place, so the
-window appears on the keystroke rather than after the query returns. The running
-app list refreshes every two seconds while the overlay is open.
+## Development
 
-It sits on the largest physical monitor by default. Set
-`HYPR_LAUNCHER_MAIN_MONITOR` to a connector name (`DP-1`, `HDMI-A-1`, …) to
-choose explicitly.
+```sh
+cargo test                              # unit + integration tests
+cargo clippy --all-targets -- -D warnings
+```
 
-Commands run in `$HYPR_LAUNCHER_TERMINAL`, default `kitty`. Point it at the same
-variable your own terminal bind uses so both agree.
-
-App focus tries the Lua dispatcher form first when the running Hyprland config
-is Lua-based, and falls back to a native `focuswindow` dispatch.
+Source files carry no comments; the rationale lives in [AGENTS.md](AGENTS.md).
 
 ## Licence
 

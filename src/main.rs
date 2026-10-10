@@ -8,8 +8,6 @@ use std::sync::{Arc, atomic::AtomicBool};
 use gtk4 as gtk;
 use gtk4::{gio::prelude::*, glib};
 
-/// Reverse-DNS application id, used by GTK for the window's WM class and for
-/// the D-Bus name that makes a second invocation reach the running instance.
 const APPLICATION_ID: &str = "dev.hyprland.ShortcutLauncher";
 
 fn main() {
@@ -83,9 +81,6 @@ fn main() {
         }
     });
 
-    // Keep the process alive after the overlay is hidden. The local instance
-    // socket forwards later invocations to this process, so Super+K toggles
-    // one launcher instead of creating a second copy.
     let _hold = app.hold();
     app.run();
 }

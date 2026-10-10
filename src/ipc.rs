@@ -70,8 +70,6 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
     for _ in 0..100 {
         match try_lock(&lock) {
             Ok(()) => {
-                // A legacy primary may predate the lock file. Give it a
-                // chance to receive the toggle before replacing a stale path.
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
@@ -88,8 +86,6 @@ fn acquire_instance_at(path: &Path) -> io::Result<AcquiredInstance> {
                 if try_toggle_existing(path)? {
                     return Ok(AcquiredInstance::Secondary);
                 }
-                // The lock owner may be between opening the lock and binding
-                // its socket. Retry briefly instead of stealing its endpoint.
                 thread::sleep(Duration::from_millis(10));
             }
             Err(error) => return Err(error),
@@ -156,9 +152,6 @@ fn remove_socket_if_present(path: &Path) -> io::Result<()> {
 }
 
 fn socket_path() -> io::Result<PathBuf> {
-    // No /tmp fallback. A missing XDG_RUNTIME_DIR means no Wayland session
-    // either, so there is nothing to toggle, and a world-visible socket is the
-    // wrong trade for a hypothetical headless run.
     let runtime_dir = env::var_os("XDG_RUNTIME_DIR").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::NotFound,

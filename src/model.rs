@@ -1,6 +1,5 @@
 use serde::Deserialize;
 
-/// The modifier bit values used by Hyprland's `modmask` field.
 const MOD_SHIFT: u32 = 1;
 const MOD_CAPS: u32 = 2;
 const MOD_CTRL: u32 = 4;
@@ -61,10 +60,6 @@ impl Shortcut {
         }
 
         if self.dispatcher.trim() == "__lua" {
-            // Hyprland's Lua bridge exposes an internal numeric action id rather
-            // than the action's meaning. Lua configurations should provide a
-            // description (which is returned above); keep older or custom
-            // configurations readable without leaking that implementation id.
             return "Custom Hyprland action".to_owned();
         }
 

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Hyprland Shortcut Launcher
+Comment=Searchable Hyprland shortcuts, running apps, and commands
+Exec=hypr-shortcut-launcher
+Icon=hypr-shortcut-launcher
+Terminal=false
+Categories=Utility;
+Keywords=hyprland;shortcuts;keybinds;launcher;

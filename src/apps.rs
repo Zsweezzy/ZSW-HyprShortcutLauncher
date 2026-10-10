@@ -7,8 +7,6 @@ pub struct AppGroup {
     pub class: String,
     pub display_name: String,
     pub windows: Vec<WindowInfo>,
-    /// Global hotkey for an app with no window to focus. `None` for windowed
-    /// apps, whose rows are focused with Enter instead.
     pub shortcut: Option<String>,
 }
 
@@ -33,24 +31,16 @@ impl AppGroup {
     }
 }
 
-/// An app that runs without a window. `hyprctl clients` cannot report these, so
-/// a running one would otherwise be missing from the applications tab entirely.
 struct WindowlessApp {
     class: &'static str,
     shortcut: &'static str,
 }
 
 const WINDOWLESS_APPS: &[WindowlessApp] = &[WindowlessApp {
-    // Neru grabs the keyboard through the evdev proxy instead of binding a
-    // Hyprland shortcut, so nothing about it is discoverable from the outside.
     class: "neru",
     shortcut: "Ctrl + Shift + Space",
 }];
 
-/// Appends the windowless apps that are currently running.
-///
-/// They go last, which is where `group_windows` already sorts an app with no
-/// window to focus.
 pub fn append_running_windowless_apps(apps: &mut Vec<AppGroup>) {
     let additions: Vec<AppGroup> = WINDOWLESS_APPS
         .iter()
@@ -70,9 +60,6 @@ fn windowless_app_group(app: &WindowlessApp) -> AppGroup {
     }
 }
 
-/// Returns whether a process with this exact name is running, by reading
-/// `/proc/<pid>/comm`. A full /proc scan is cheap enough for a couple of names
-/// and avoids spawning `pgrep` per lookup.
 fn process_is_running(name: &str) -> bool {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return false;

@@ -1,10 +1,3 @@
-//! Discovery of runnable programs for the "Installed apps" tab.
-//!
-//! Two sources decide what lands in the list. `PATH` says what can be run at
-//! all, and the desktop entries under the XDG data directories say which of
-//! those open a window of their own. Anything a desktop entry starts is a
-//! graphical launcher, so it stays out of the list the launcher offers to run.
-
 use std::{
     collections::{HashMap, HashSet},
     env,
@@ -15,13 +8,7 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
-/// Programs whose whole purpose is an interactive full-screen terminal UI.
-///
-/// Most of these ship no desktop entry at all, because a graphical launcher has
-/// no use for them. The desktop signal below cannot see them, so they are named
-/// here.
 const TUI_APPS: &[&str] = &[
-    // monitoring
     "btop",
     "btop++",
     "htop",
@@ -33,7 +20,6 @@ const TUI_APPS: &[&str] = &[
     "gping",
     "nvtop",
     "ctop",
-    // git and cluster
     "lazygit",
     "gitui",
     "tig",
@@ -41,7 +27,6 @@ const TUI_APPS: &[&str] = &[
     "lazysql",
     "k9s",
     "dive",
-    // files
     "yazi",
     "xplr",
     "superfile",
@@ -54,19 +39,16 @@ const TUI_APPS: &[&str] = &[
     "gdu",
     "dust",
     "duf",
-    // pickers and docs
     "fzf",
     "fzf-tmux",
     "sk",
     "tldr",
-    // multiplexers
     "tmux",
     "zellij",
     "dvtm",
     "byobu",
     "screen",
     "lazy",
-    // editors
     "nvim",
     "vim",
     "view",
@@ -76,11 +58,9 @@ const TUI_APPS: &[&str] = &[
     "hx",
     "kak",
     "emacs",
-    // debuggers
     "gdb",
     "lldb",
     "rr",
-    // repls
     "python",
     "python3",
     "ipython",
@@ -95,7 +75,6 @@ const TUI_APPS: &[&str] = &[
     "sqlite3",
     "redis-cli",
     "mongosh",
-    // terminal agents
     "opencode",
     "aider",
     "claude",
@@ -105,9 +84,6 @@ const TUI_APPS: &[&str] = &[
     "ollama",
 ];
 
-/// First tokens of an `Exec=` line that run something else rather than being the
-/// app. Naming one of these as "the graphical app" would hide a command the
-/// launcher is meant to offer (`flatpak` and `env` both appear this way).
 const EXEC_WRAPPERS: &[&str] = &[
     "env",
     "flatpak",
@@ -135,22 +111,15 @@ const EXEC_WRAPPERS: &[&str] = &[
 const TUI_LABEL: &str = "TUI apps";
 const COMMAND_LABEL: &str = "Commands";
 
-/// How many names one `whatis` call may carry. The tool takes the whole batch at
-/// once, so the whole list is resolved in a handful of processes.
 const WHATIS_BATCH: usize = 500;
 
-/// Terminal the launcher opens commands in. Hyprland passes its own `terminal`
-/// variable through the environment, so the two cannot drift apart.
 const TERMINAL_ENV: &str = "HYPR_LAUNCHER_TERMINAL";
 const DEFAULT_TERMINAL: &str = "kitty";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledCommand {
     pub name: String,
-    /// Resolved location, which is what tells `python3` apart from `python3.13`.
     pub path: String,
-    /// One-line manual summary shown in place of the path. `None` when the
-    /// manual has no entry for the command.
     pub description: Option<String>,
     pub tui: bool,
 }
@@ -161,8 +130,6 @@ impl InstalledCommand {
     }
 }
 
-/// One rendered line: a section heading, or a command to run. Headings live in
-/// the same list as their commands so they scroll with them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledRow {
     Section(&'static str),
@@ -178,16 +145,12 @@ impl InstalledRow {
     }
 }
 
-/// Every executable on `PATH`, minus the graphical launchers, ordered so the
-/// TUI section comes first and both sections read alphabetically.
 pub fn scan() -> Vec<InstalledCommand> {
     let desktop = desktop_programs();
     let mut seen: HashSet<String> = HashSet::new();
     let mut commands = Vec::new();
 
     for directory in path_directories() {
-        // Flatpak's export directory holds one wrapper per graphical app,
-        // named after the app id rather than anything a person would type.
         if directory.ends_with("flatpak/exports/bin") {
             continue;
         }
@@ -250,9 +213,6 @@ pub fn filter(commands: &[InstalledCommand], query: &str) -> Vec<InstalledComman
         .collect()
 }
 
-/// Interleaves the section headings. A heading is emitted where the section
-/// changes, so a section with no match under the current query disappears
-/// instead of heading an empty list.
 pub fn rows(commands: &[InstalledCommand]) -> Vec<InstalledRow> {
     let mut rows = Vec::new();
     let mut section: Option<bool> = None;
@@ -270,8 +230,6 @@ pub fn rows(commands: &[InstalledCommand]) -> Vec<InstalledRow> {
     rows
 }
 
-/// Runs `name` in a new terminal window that stays open after the program
-/// exits, so the output of a one-shot command like `ls` can still be read.
 pub fn launch(name: &str) -> Result<(), String> {
     let terminal = env::var(TERMINAL_ENV)
         .ok()
@@ -291,9 +249,6 @@ struct DesktopPrograms {
     terminal: HashSet<String>,
 }
 
-/// Reads the installed desktop entries once. They are packaging output, so they
-/// do not change while the launcher is open and the `PATH` scan runs every
-/// couple of seconds.
 fn desktop_programs() -> &'static DesktopPrograms {
     static PROGRAMS: OnceLock<DesktopPrograms> = OnceLock::new();
     PROGRAMS.get_or_init(|| {
@@ -333,9 +288,6 @@ fn desktop_programs() -> &'static DesktopPrograms {
     })
 }
 
-/// Returns `Terminal=` and the program an entry starts, read from the main
-/// `[Desktop Entry]` group only: the action groups below it describe what the
-/// menu item does, not what the program is.
 fn main_entry(contents: &str) -> Option<(bool, String)> {
     let mut in_main_group = false;
     let mut runs_in_terminal = false;
@@ -391,17 +343,11 @@ fn path_directories() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// One-line manual summaries keyed by command name, kept for the life of the
-/// process. A `None` value records "no manual entry" so a command without one is
-/// not looked up again on the next refresh.
 fn descriptions() -> &'static Mutex<HashMap<String, Option<String>>> {
     static DESCRIPTIONS: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
     DESCRIPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Fills the summary cache for any names not seen before. `whatis` only reads
-/// the prebuilt manual index, so no listed command is executed, and it accepts
-/// a whole batch per call.
 fn load_descriptions(names: &[String]) {
     let missing: Vec<String> = {
         let cache = descriptions()
@@ -435,8 +381,6 @@ fn load_descriptions(names: &[String]) {
     }
 }
 
-/// Parses `whatis` output (`name (section) - summary`) into name/summary pairs.
-/// The first entry wins, which prefers the primary `(1)` section over variants.
 fn parse_whatis(text: &str) -> HashMap<String, String> {
     let mut descriptions = HashMap::new();
     for line in text.lines() {
@@ -544,8 +488,6 @@ mod tests {
              cat: nothing appropriate.\n",
         );
 
-        // The primary section wins over the `(1p)` variant, and a line without a
-        // separator is ignored.
         assert_eq!(
             parsed.get("cp").map(String::as_str),
             Some("copy files and directories")

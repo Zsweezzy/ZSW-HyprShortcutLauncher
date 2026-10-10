@@ -38,7 +38,6 @@ enum ActiveTab {
 }
 
 impl ActiveTab {
-    /// Number of tabs, and so the width of the Tab cycle.
     const COUNT: u32 = 3;
 
     fn index(self) -> u32 {
@@ -70,8 +69,6 @@ struct State {
     filtered_shortcuts: Vec<Shortcut>,
     filtered_apps: Vec<AppGroup>,
     filtered_installed: Vec<InstalledCommand>,
-    /// Section headings interleaved with `filtered_installed`, in the order the
-    /// rows are rendered. A row index indexes this, not `filtered_installed`.
     installed_rows: Vec<InstalledRow>,
     active_tab: ActiveTab,
     error: Option<String>,
@@ -81,7 +78,6 @@ struct State {
 struct RefreshResult {
     shortcuts: Result<Vec<Shortcut>, String>,
     apps: Result<Vec<AppGroup>, String>,
-    /// A `PATH` scan that swallows unreadable directories, so it cannot fail.
     installed: Vec<InstalledCommand>,
 }
 
@@ -139,8 +135,6 @@ pub fn create_window(
         .build();
     window.set_decorated(false);
     window.add_css_class("launcher-window");
-    // Keep the layer surface resizable so gtk4-layer-shell can honor all four
-    // anchors and expand its transparent hit area across the selected output.
     window.set_resizable(true);
 
     let main_monitor = select_main_monitor();
@@ -342,9 +336,6 @@ pub fn create_window(
     {
         let callback_ui = ui.clone();
         let controller = gtk::EventControllerKey::new();
-        // Capture keys before the focused search entry can consume Escape or
-        // navigation shortcuts. Returning Proceed below still allows normal
-        // text input to reach the entry.
         controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         controller.set_propagation_limit(gtk::PropagationLimit::None);
         controller.connect_key_pressed(move |_, key, _, modifiers| {
@@ -369,14 +360,11 @@ pub fn create_window(
         ui.show();
     } else {
         if main_monitor.is_some() {
-            // Prime the layer surface while the daemon starts hidden, then keep
-            // the window ready for the first Super+K press without a visible flash.
             ui.window.set_opacity(0.0);
             ui.window.present();
             ui.window.hide();
             ui.window.set_opacity(1.0);
         }
-        // Warm the data cache while the daemon is hidden in the background.
         ui.start_refresh();
     }
 
@@ -483,8 +471,6 @@ fn scroll_row_into_view(
     row: &gtk::ListBoxRow,
     generation: &Rc<Cell<u64>>,
 ) {
-    // Rows are rebuilt while the window may still be laying out. Retry once on
-    // the next idle turn so the first keyboard interaction is not lost.
     if row.allocated_height() <= 0 || scroll.vadjustment().page_size() <= 0.0 {
         let scheduled_generation = generation.get();
         let scroll = scroll.clone();
@@ -658,8 +644,6 @@ impl LauncherUi {
     fn show(&self) {
         self.focus_change_requested.store(false, Ordering::SeqCst);
 
-        // Present the shell before querying Hyprland. Both hyprctl calls are
-        // subprocesses and must not delay the first frame of the launcher.
         self.window.present();
         self.search.grab_focus();
         self.start_refresh();
@@ -784,8 +768,6 @@ impl LauncherUi {
         } else {
             None
         };
-        // Row indices count headings, so resolve the selection against the
-        // rendered rows and hand back a row index.
         let installed_rows = installed::rows(&installed);
         let installed_index = if installed_changed {
             let previous = selected_row_index(&self.installed_list);
@@ -805,9 +787,6 @@ impl LauncherUi {
         } else {
             None
         };
-        // The installed list opens with a section heading, which cannot be run.
-        // Land the selection on the first command instead so Enter works right
-        // after typing a query, the same as in the other tabs.
         let installed_index =
             installed_index.and_then(|index| command_row_at_or_after(&installed_rows, index));
 
@@ -928,9 +907,6 @@ impl LauncherUi {
             return true;
         }
 
-        // The Hyprland binding and IPC own the actual Super+K toggle. If the
-        // compositor also forwards the key to GTK, consume it without toggling
-        // a second time (or inserting a stray "k" into the search entry).
         if key == gdk::Key::k && modifiers.contains(gdk::ModifierType::SUPER_MASK) {
             return true;
         }
@@ -1022,8 +998,6 @@ impl LauncherUi {
             .selected_row()
             .map(|row| row.index())
             .unwrap_or(if direction > 0 { -1 } else { count as i32 });
-        // Section headings are rows like any other, so step past the ones that
-        // cannot be selected rather than letting the cursor rest on a label.
         let mut next = (current + direction).rem_euclid(count as i32);
         for _ in 0..count {
             let Some(row) = list.row_at_index(next) else {
@@ -1110,7 +1084,6 @@ impl LauncherUi {
     }
 }
 
-/// Selects a row and brings it into view, if the list has that many rows.
 fn select_and_scroll(
     list: &gtk::ListBox,
     scroll: &gtk::ScrolledWindow,
@@ -1229,7 +1202,6 @@ fn shortcut_row(shortcut: &Shortcut) -> gtk::ListBoxRow {
     row
 }
 
-/// One line of the installed-apps tab: a section heading, or a runnable command.
 fn installed_row(item: &InstalledRow) -> gtk::ListBoxRow {
     let InstalledRow::Command(command) = item else {
         let row = gtk::ListBoxRow::new();
@@ -1309,8 +1281,6 @@ fn app_row(app: &AppGroup) -> gtk::ListBoxRow {
     let workspace = latest
         .map(|window| format!(" · workspace {}", window.workspace))
         .unwrap_or_default();
-    // A windowless app has nothing for Enter to focus, so its row advertises the
-    // global hotkey that drives it instead of a window title.
     let (description, hint) = match &app.shortcut {
         Some(shortcut) => (shortcut.clone(), "display only"),
         None => (format!("{title}  ·  {count}{workspace}"), "Enter to focus"),
@@ -1371,8 +1341,6 @@ fn preserved_app_index(apps: &[AppGroup], selected_class: Option<&str>) -> Optio
     selected_class.and_then(|selected| apps.iter().position(|app| app.class == selected))
 }
 
-/// Same idea as `preserved_app_index`, but over rows that carry headings, so a
-/// selected command stays selected when a heading appears above it.
 fn preserved_installed_index(rows: &[InstalledRow], selected_name: Option<&str>) -> Option<usize> {
     selected_name.and_then(|selected| {
         rows.iter().position(|row| {
@@ -1382,7 +1350,6 @@ fn preserved_installed_index(rows: &[InstalledRow], selected_name: Option<&str>)
     })
 }
 
-/// First runnable row at or after `start`, skipping section headings.
 fn command_row_at_or_after(rows: &[InstalledRow], start: usize) -> Option<usize> {
     (start..rows.len()).find(|&index| rows[index].command().is_some())
 }
@@ -1435,7 +1402,6 @@ mod tests {
             installed_command("ls", false),
         ]);
 
-        // Row 0 is the "TUI apps" heading; the first runnable row is `btop`.
         assert!(rows[0].command().is_none());
         assert_eq!(command_row_at_or_after(&rows, 0), Some(1));
         assert_eq!(command_row_at_or_after(&rows, 1), Some(1));
