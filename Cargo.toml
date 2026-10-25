@@ -1,10 +1,10 @@
 [package]
-name = "hypr-shortcut-launcher"
+name = "ZSW-HyprShortcutLauncher"
 version = "0.1.0"
 edition = "2024"
 description = "A searchable Hyprland shortcut and running-app overlay"
 license = "MIT"
-repository = "https://github.com/Zsweezzy/hypr-shortcut-launcher"
+repository = "https://github.com/Zsweezzy/ZSW-HyprShortcutLauncher"
 
 [lib]
 name = "hypr_shortcut_launcher"

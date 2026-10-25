@@ -1,4 +1,4 @@
-# hypr-shortcut-launcher
+# ZSW-HyprShortcutLauncher
 
 A searchable `Super+K` overlay for Hyprland. Three tabs: the keymap you actually
 configured, the apps you actually have running, and the commands you can run.
@@ -21,7 +21,7 @@ Download the binary for your architecture from the
 [latest release](../../releases) and put it on `PATH`. Or:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Zsweezzy/hypr-shortcut-launcher/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Zsweezzy/ZSW-HyprShortcutLauncher/main/install.sh | sh
 ```
 
 The release binary needs GTK 4 and gtk4-layer-shell at runtime; both come from

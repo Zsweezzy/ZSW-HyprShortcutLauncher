@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repo="Zsweezzy/hypr-shortcut-launcher"
+repo="Zsweezzy/ZSW-HyprShortcutLauncher"
 dest="${1:-$HOME/.local/bin}"
 
 case "$(uname -m)" in
